@@ -695,6 +695,53 @@ CONVERTER_IMPL(node_webrtc::I420ImageData, rtc::scoped_refptr<webrtc::I420Buffer
   return node_webrtc::Pure(CreateI420Buffer(value));
 }
 
+static node_webrtc::Validation<node_webrtc::RTCOnDataEventDict> CreateRTCOnDataEventDict(
+    v8::ArrayBuffer::Contents audioData,
+    int bitsPerSample,
+    int sampleRate,
+    int numberOfChannels,
+    int numberOfFrames
+) {
+  auto actualByteLength = audioData.ByteLength();
+  auto expectedByteLength = static_cast<size_t>(numberOfChannels * numberOfFrames * bitsPerSample / 8);
+  if (actualByteLength != expectedByteLength) {
+    auto error = "Expected a .byteLength of " + std::to_string(expectedByteLength) + ", not " +
+        std::to_string(actualByteLength);
+    return node_webrtc::Validation<node_webrtc::RTCOnDataEventDict>::Invalid(error);
+  }
+
+  std::unique_ptr<uint8_t[]> audioDataCopy(new uint8_t[actualByteLength]);
+  if (!audioDataCopy) {
+    auto error = "Failed to copy audio data";
+    return node_webrtc::Validation<node_webrtc::RTCOnDataEventDict>::Invalid(error);
+  }
+  memcpy(audioDataCopy.get(), audioData.Data(), actualByteLength);
+
+  node_webrtc::RTCOnDataEventDict dict = {
+    audioDataCopy.release(),
+    bitsPerSample,
+    sampleRate,
+    static_cast<size_t>(numberOfChannels),
+    static_cast<size_t>(numberOfFrames)
+  };
+
+  return node_webrtc::Pure(dict);
+}
+
+FROM_JS_IMPL(node_webrtc::RTCOnDataEventDict, value) {
+  return node_webrtc::From<v8::Local<v8::Object>>(value).FlatMap<node_webrtc::RTCOnDataEventDict>(
+  [](const v8::Local<v8::Object> object) {
+    return node_webrtc::Validation<node_webrtc::RTCOnDataEventDict>::Join(
+            curry(CreateRTCOnDataEventDict)
+            % node_webrtc::GetRequired<v8::ArrayBuffer::Contents>(object, "audioData")
+            * node_webrtc::GetRequired<int>(object, "bitsPerSample")
+            * node_webrtc::GetRequired<int>(object, "sampleRate")
+            * node_webrtc::GetRequired<int>(object, "numberOfChannels")
+            * node_webrtc::GetRequired<int>(object, "numberOfFrames")
+        );
+  });
+}
+
 #define REQUIRED(type, memberName, stringValue) EXPAND_OBJ_FROM_JS_REQUIRED(type, stringValue)
 #define OPTIONAL(type, memberName, stringValue) EXPAND_OBJ_FROM_JS_OPTIONAL(type, stringValue)
 #define DEFAULT(type, memberName, stringValue, defaultValue) EXPAND_OBJ_FROM_JS_DEFAULT(type, stringValue, defaultValue)
@@ -760,4 +807,21 @@ TO_JS_IMPL(webrtc::VideoFrame, value) {
   auto data = maybeData.UnsafeFromValid();
   frame->Set(Nan::New("data").ToLocalChecked(), data);
   return node_webrtc::Pure(scope.Escape(frame).As<v8::Value>());
+}
+
+TO_JS_IMPL(node_webrtc::RTCOnDataEventDict, dict) {
+  Nan::EscapableHandleScope scope;
+
+  auto isolate = Nan::GetCurrentContext()->GetIsolate();
+  auto byteLength = dict.numberOfChannels * dict.numberOfFrames * dict.bitsPerSample / 8;
+  auto arrayBuffer = v8::ArrayBuffer::New(isolate, dict.audioData, byteLength, v8::ArrayBufferCreationMode::kInternalized);
+  auto uint8Array = v8::Uint8ClampedArray::New(arrayBuffer, 0, byteLength);
+
+  auto object = Nan::New<v8::Object>();
+  object->Set(Nan::New("audioData").ToLocalChecked(), uint8Array);
+  object->Set(Nan::New("bitsPerSample").ToLocalChecked(), node_webrtc::From<v8::Local<v8::Value>>(dict.bitsPerSample).UnsafeFromValid());
+  object->Set(Nan::New("sampleRate").ToLocalChecked(), node_webrtc::From<v8::Local<v8::Value>>(dict.sampleRate).UnsafeFromValid());
+  object->Set(Nan::New("numberOfChannels").ToLocalChecked(), node_webrtc::From<v8::Local<v8::Value>>(static_cast<double>(dict.numberOfChannels)).UnsafeFromValid());
+  object->Set(Nan::New("numberOfFrames").ToLocalChecked(), node_webrtc::From<v8::Local<v8::Value>>(static_cast<double>(dict.numberOfFrames)).UnsafeFromValid());
+  return node_webrtc::Pure(scope.Escape(object).As<v8::Value>());
 }
